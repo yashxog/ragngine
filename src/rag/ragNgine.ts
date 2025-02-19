@@ -1,0 +1,128 @@
+import { DocumentEmbedding, EmbeddingsInstance, VectorDbInstacne, LLMInstance, RagPiplineInput, RagPipeline, RerankMethods } from "../interfaces/interface";
+import { splitDocumnet } from "../utils/textSplitter";
+import naiveRag from "../pipelines/naiveRag";
+
+/**
+ * Class representing the RAG (Retrieval-Augmented Generation) engine.
+ * This class manages the components needed to create and query a RAG model using embeddings, a vector database, and a language model (LLM).
+ */
+export class RagNgine {
+    private embedding: EmbeddingsInstance;
+    private vectorDb: VectorDbInstacne;
+    private llm: LLMInstance;
+    
+    /**
+     * Creates an instance of the RAG engine.
+     * @param {EmbeddingsInstance} embedding - The embeddings model used for document vectorization.
+     * @param {VectorDbInstacne} vectorDb - The vector database instance used to store and query document vectors.
+     * @param {LLMInstance} llm - The language model instance used to generate responses based on retrieved documents.
+     */
+    constructor(embedding: EmbeddingsInstance, vectorDb: VectorDbInstacne, llm: LLMInstance) {
+        this.llm = llm;
+        this.embedding = embedding;
+        this.vectorDb = vectorDb;
+    }
+
+    
+    /**
+     * Method to create a RAG model for a document by splitting it into chunks and storing the embeddings in the vector database.
+     * 
+     * @param {DocumentEmbedding} documentConfig - The configuration object for creating embeddings from a document.
+     * @param {string} documentConfig.documentUrl - The URL of the document (PDF or text) to be embedded.
+     * @param {number} [documentConfig.chunkSize=400] - Optional. The size of each chunk for splitting the document.
+     * @param {number} [documentConfig.chunkOverlap=50] - Optional. The overlap between chunks when splitting the document.
+     * 
+     * @returns A promise that resolves to the result of adding documents to the vector database.
+     * @throws {Error} If an error occurs while creating the RAG.
+     */
+    async createDocumentRag(documentConfig: DocumentEmbedding): Promise<string[]> {
+        try {
+
+            const ragVectorStore = this.vectorDb
+
+            const splitDocumnets  = await splitDocumnet(documentConfig.documentUrl, documentConfig.chunkSize, documentConfig.chunkOverlap)
+
+            const res = await ragVectorStore.addDocuments(splitDocumnets);
+
+            return res;
+
+        } catch (error) {
+            console.error("Error Occured While Creating RAG: ", error.message);
+        }
+    }
+
+
+    // CHANGE TYPE OF PIPELINE AND RERANK
+   /**
+     * Method to query the RAG model with a given query, retrieves similar documents, and generates a response using the LLM.
+     * 
+     * @param {Object} params - The parameters for querying the RAG model.
+     * @param {string} params.query - The query to search for in the RAG.
+     * @param {number} [params.topK=10] - The number of top documents to retrieve based on similarity to the query.
+     * @param {RerankMethods} [params.rerank="cosine"] - The reranking method to use (e.g., cosine similarity).
+     * @param {RagPipeline} [params.ragPipeline="naiveRag"] - The RAG pipeline to use for generating the response, set default to 'naiveRag'.
+     * 
+     * @returns A promise that resolves to the generated response or a message if no similar documents are found.
+     * @throws {Error} If an error occurs while querying the RAG model.
+     */
+    async queryRagModel({query, topK = 10, rerank = "cosine", ragPipeline = "naiveRag"}: {query: string, topK?: number, rerank?: RerankMethods, ragPipeline?: RagPipeline}){
+        try {
+        
+            const ragLLM = this.llm;
+            const ragVectorStore = this.vectorDb;
+            const embeddings = this.embedding;
+            
+            const retriveDoc = await ragVectorStore.similaritySearch(
+                query,
+                topK
+            );
+
+            const docContent = retriveDoc.filter(
+                (retriveDoc) => retriveDoc.pageContent && retriveDoc.pageContent.length > 0,
+              );
+            
+            if(docContent && docContent.length > 0) {
+            const ragInput = {
+                query,
+                topK,
+                rerank,
+                docContent,
+                ragPipeline,
+                embeddings,
+                llm: ragLLM
+            }
+
+            const generateResponse = await this.createPipeline(ragInput);
+
+            return generateResponse;
+
+        }
+            return("No Documents Found Similar To Given Query");
+        } catch (error) {
+            console.error("Error Occured While Querying RAG: ", error.message);
+        }
+    }
+
+
+    /**
+     * Creates the appropriate pipeline for generating a response based on the specified RAG pipeline.
+     * 
+     * @param {RagPiplineInput} ragInput - The input data required to generate the response, including the query and documents.
+     * 
+     * @returns  A promise that resolves to the response generated by the RAG pipeline.
+     * @throws {Error} If an unsupported RAG pipeline is specified.
+     */
+    private async createPipeline(ragInput: RagPiplineInput) {
+        const pipeline = ragInput.ragPipeline;
+
+        switch(pipeline.toLowerCase()) {
+            case "naiverag": {
+                const res = await naiveRag(ragInput);
+                return res
+            }
+            default : {
+                throw new Error("Provided pipeline not supported")
+            }
+        }
+    }
+}
